@@ -257,10 +257,14 @@ function generateBotResponse(parsed) {
 const wppClient = new Client({
   authStrategy: new LocalAuth({ dataPath: "./wpp-session" }),
   puppeteer: {
-    headless: true,
-    args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
-  },
-});
+  headless: true,
+  args: [
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-gpu"
+  ],
+},
 
 let wppStatus = "disconnected"; // Estado atual da conexão WPP
 let qrCodeData = null;          // QR Code em base64 para exibir no frontend
