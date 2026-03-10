@@ -303,8 +303,7 @@ wppClient.on("ready", () => {
 wppClient.on("message", async (msg) => {
   // Ignora mensagens de grupos e mensagens do próprio usuário em outros contextos
   // Só processa mensagens diretas (chats privados)
-  if (msg.isGroupMsg) return;
-
+if (msg.isGroupMsg || msg.from === 'status@broadcast') return;
   const text = msg.body;
   console.log(`📨 Mensagem recebida: "${text}"`);
 
@@ -332,6 +331,11 @@ wppClient.on("disconnected", () => {
   io.emit("wpp_status", { status: "disconnected" });
 });
 
+app.delete("/api/entries", (req, res) => {
+  saveDB({ entries: [] });
+  io.emit("entries_cleared");
+  res.json({ ok: true });
+});
 // ─── API REST ─────────────────────────────────────────────────────────────────
 
 // Retorna todos os registros — o frontend chama isso ao carregar
