@@ -373,4 +373,127 @@ server.listen(PORT, () => {
   console.log(`📡 API: http://localhost:${PORT}/api`);
   console.log(`\n🔄 Iniciando conexão com WhatsApp...`);
   wppClient.initialize();
+  scheduleWeeklyReport();
+});
+
+// ─── Relatório Semanal com IA ─────────────────────────────────────────────────
+
+function getWeekEntries() {
+  const db = loadDB();
+  const now = new Date();
+  const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+  return db.entries.filter(e => new Date(e.timestamp) >= weekAgo);
+}
+
+function buildWeekSummary(entries) {
+  const finance  = entries.filter(e => e.category === "finance");
+  const exercise = entries.filter(e => e.category === "exercise");
+  const sleep    = entries.filter(e => e.category === "sleep");
+  const mood     = entries.filter(e => e.category === "mood");
+  const food     = entries.filter(e => e.category === "food");
+
+  const income  = finance.filter(e => e.data.type === "income").reduce((s, e) => s + (e.data.amount || 0), 0);
+  const expense = finance.filter(e => e.data.type === "expense").reduce((s, e) => s + (e.data.amount || 0), 0);
+  const exKm    = exercise.reduce((s, e) => s + (e.data.distance_km || 0), 0);
+  const exMin   = exercise.reduce((s, e) => s + (e.data.duration_min || 0), 0);
+  const avgSleep = sleep.length ? (sleep.reduce((s, e) => s + (e.data.hours || 0), 0) / sleep.length).toFixed(1) : null;
+  const avgMood  = mood.length ? (mood.reduce((s, e) => s + (e.data.score || 0), 0) / mood.length).toFixed(1) : null;
+  const healthyMeals = food.filter(e => e.data.healthiness === "healthy").length;
+
+  return {
+    period: { from: new Date(Date.now() - 7*24*60*60*1000).toLocaleDateString('pt-BR'), to: new Date().toLocaleDateString('pt-BR') },
+    finance: { income, expense, balance: income - expense, transactions: finance.length },
+    exercise: { sessions: exercise.length, km: exKm.toFixed(1), minutes: exMin },
+    sleep: { nights: sleep.length, avg_hours: avgSleep },
+    mood: { records: mood.length, avg_score: avgMood },
+    food: { meals: food.length, healthy: healthyMeals },
+    total_entries: entries.length,
+  };
+}
+
+async function generateAIInsights(summary) {
+  try {
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": process.env.ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01"
+      },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 600,
+        messages: [{
+          role: "user",
+          content: `Você é um coach de hábitos pessoal, amigo e direto. Analise os dados da semana do usuário e gere 3 insights práticos e personalizados em português brasileiro. Seja específico, use os números reais, e dê pelo menos uma sugestão acionável.\n\nDados da semana:\n${JSON.stringify(summary, null, 2)}\n\nResponda APENAS com os 3 insights, um por linha, começando com emoji. Sem introdução, sem título, sem explicação extra. Máximo 2 linhas por insight.`
+        }]
+      })
+    });
+    const data = await response.json();
+    return data.content?.[0]?.text || null;
+  } catch (err) {
+    console.error("Erro ao gerar insights IA:", err.message);
+    return null;
+  }
+}
+
+async function sendWeeklyReport() {
+  if (wppStatus !== "ready") {
+    console.log("Relatório semanal: WhatsApp não conectado, pulando...");
+    return;
+  }
+  console.log("Gerando relatório semanal...");
+  const entries = getWeekEntries();
+  if (entries.length === 0) {
+    console.log("Sem registros na semana, pulando relatório.");
+    return;
+  }
+
+  const summary = buildWeekSummary(entries);
+  const aiInsights = process.env.ANTHROPIC_API_KEY ? await generateAIInsights(summary) : null;
+
+  const balanceEmoji = summary.finance.balance >= 0 ? "💚" : "🔴";
+  const sleepEmoji   = !summary.sleep.avg_hours ? "😴" : summary.sleep.avg_hours >= 7 ? "😴✨" : summary.sleep.avg_hours >= 6 ? "😴" : "😓";
+  const moodEmoji    = !summary.mood.avg_score ? "😐" : summary.mood.avg_score >= 2 ? "😊" : summary.mood.avg_score >= 0 ? "😐" : "😔";
+
+  let report = `━━━━━━━━━━━━━━━━━━━━\n📋 *RELATÓRIO SEMANAL*\n${summary.period.from} → ${summary.period.to}\n━━━━━━━━━━━━━━━━━━━━\n\n💰 *FINANÇAS*\n• Receitas: +R$${summary.finance.income.toFixed(2)}\n• Gastos: -R$${summary.finance.expense.toFixed(2)}\n• ${balanceEmoji} Saldo: R$${summary.finance.balance.toFixed(2)}\n\n🏃 *ATIVIDADE FÍSICA*\n• ${summary.exercise.sessions} sessões registradas\n• ${summary.exercise.km}km percorridos\n• ${summary.exercise.minutes} minutos no total\n\n${sleepEmoji} *SONO*\n• Média de ${summary.sleep.avg_hours || "—"}h por noite\n• ${summary.sleep.nights} noites registradas\n\n${moodEmoji} *HUMOR*\n• Score médio: ${summary.mood.avg_score || "—"}/5\n• ${summary.mood.records} registros\n\n🥗 *ALIMENTAÇÃO*\n• ${summary.food.meals} refeições registradas\n• ${summary.food.healthy} refeições saudáveis`;
+
+  if (aiInsights) {
+    report += `\n\n💡 *INSIGHTS DA SEMANA*\n${aiInsights}`;
+  }
+
+  report += `\n\n━━━━━━━━━━━━━━━━━━━━\n_Total: ${summary.total_entries} registros esta semana_\n_Continue assim! 🚀_`;
+
+  try {
+    const chats = await wppClient.getChats();
+    const diaryGroup = chats.find(c => c.isGroup && c.name === 'Diário Vivo');
+    if (diaryGroup) {
+      await diaryGroup.sendMessage(report);
+      console.log("Relatório semanal enviado!");
+    } else {
+      console.log("Grupo 'Diário Vivo' não encontrado.");
+    }
+  } catch (err) {
+    console.error("Erro ao enviar relatório:", err.message);
+  }
+}
+
+function scheduleWeeklyReport() {
+  const now = new Date();
+  const daysUntilSunday = (7 - now.getUTCDay()) % 7 || 7;
+  const nextSunday = new Date(now);
+  nextSunday.setUTCDate(now.getUTCDate() + daysUntilSunday);
+  nextSunday.setUTCHours(23, 0, 0, 0);
+  const msUntil = nextSunday.getTime() - now.getTime();
+  console.log(`Próximo relatório semanal: ${nextSunday.toLocaleString('pt-BR')} (em ${Math.round(msUntil/1000/60/60)}h)`);
+  setTimeout(async () => {
+    await sendWeeklyReport();
+    setInterval(sendWeeklyReport, 7 * 24 * 60 * 60 * 1000);
+  }, msUntil);
+}
+
+// Rota para testar o relatório manualmente
+app.post("/api/report/send", async (req, res) => {
+  await sendWeeklyReport();
+  res.json({ ok: true, message: "Relatório enviado!" });
 });
