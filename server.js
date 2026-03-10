@@ -1,22 +1,5 @@
 /**
  * DiárioVivo — Backend
- * ─────────────────────────────────────────────────────────────────
- * Este servidor faz três coisas ao mesmo tempo:
- *  1. Conecta ao WhatsApp via whatsapp-web.js (escaneando um QR Code)
- *  2. Processa cada mensagem recebida com o parser de hábitos
- *  3. Expõe uma API REST + WebSocket para o frontend React consumir
- *
- * COMO FUNCIONA A INTEGRAÇÃO COM WHATSAPP:
- *  A lib whatsapp-web.js "controla" o WhatsApp Web por dentro usando
- *  o Puppeteer (um browser Chrome sem janela). Quando você escaneia
- *  o QR Code, o servidor autentica sua conta e fica "ouvindo" todas
- *  as mensagens que chegam. Cada mensagem é analisada e salva.
- *
- * FLUXO DE UMA MENSAGEM:
- *  Você manda "Corri 5km hoje" no WhatsApp →
- *  servidor recebe → parser extrai { category: "exercise", km: 5 } →
- *  salva no arquivo JSON (nosso "banco de dados" simples) →
- *  emite evento via WebSocket → frontend atualiza em tempo real
  */
 
 const express = require("express");
@@ -35,9 +18,6 @@ const io = new Server(server, { cors: { origin: "*" } });
 app.use(cors());
 app.use(express.json());
 
-// ─── Banco de dados simples (arquivo JSON) ────────────────────────────────────
-// Para produção, trocar por SQLite ou PostgreSQL. Por enquanto, JSON funciona
-// perfeitamente para uso pessoal com centenas ou até milhares de registros.
 const DB_PATH = path.join(__dirname, "data.json");
 
 function loadDB() {
@@ -55,21 +35,16 @@ function saveDB(data) {
   fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
 }
 
-// ─── Parser de linguagem natural ─────────────────────────────────────────────
-// Este é o "cérebro" do sistema. Analisa texto livre e extrai dados
-// estruturados. Pense nele como um mini-NLP customizado para hábitos.
 function parseMessage(text) {
   const lower = text.toLowerCase().trim();
   const result = {
     category: "note",
-    confidence: "low", // quão certo estamos da classificação
+    confidence: "low",
     data: {},
     raw: text,
     timestamp: new Date().toISOString(),
   };
 
-  // ── EXERCÍCIO / CORRIDA / CAMINHADA ────────────────────────────────────────
-  // Captura distância (5km, 3,5 km), duração (30 minutos, 1h) e tipo de atividade
   const exerciseWords = ["corri", "corrida", "caminhei", "caminhada", "treino", "treinei",
     "academia", "musculação", "yoga", "pilates", "bike", "ciclismo", "natação", "pedalei",
     "exercício", "exercitei", "cardio", "hiit", "crossfit"];
@@ -83,7 +58,6 @@ function parseMessage(text) {
     result.category = "exercise";
     result.confidence = "high";
 
-    // Detecta o tipo específico de atividade para mostrar o ícone certo no mapa
     const type = lower.includes("corri") || lower.includes("corrida") ? "running"
       : lower.includes("caminhei") || lower.includes("caminhada") ? "walking"
       : lower.includes("bike") || lower.includes("cicl") || lower.includes("pedal") ? "cycling"
@@ -95,11 +69,9 @@ function parseMessage(text) {
       distance_km: distMatch ? parseFloat(distMatch[1].replace(",", ".")) : null,
       duration_min: minMatch ? parseInt(minMatch[1]) : (hourMatch ? parseFloat(hourMatch[1]) * 60 : null),
       steps: stepsMatch ? parseInt(stepsMatch[1]) : null,
-      // Ativa flag para o frontend mostrar o mapa de trajeto
       needs_map: ["running", "walking", "cycling"].includes(type),
     };
 
-    // Calcula calorias estimadas (fórmula simplificada)
     if (result.data.distance_km) {
       result.data.calories_est = Math.round(result.data.distance_km * 60);
     } else if (result.data.duration_min) {
@@ -108,7 +80,6 @@ function parseMessage(text) {
     }
   }
 
-  // ── FINANÇAS ───────────────────────────────────────────────────────────────
   const financeWords = ["gastei", "paguei", "comprei", "recebi", "ganhei", "salário",
     "investimento", "poupança", "dividendo", "cobrança", "transferi", "depositei"];
   const moneyMatch = text.match(/r?\$\s?(\d+[\.,]?\d*)/i) ||
@@ -121,7 +92,6 @@ function parseMessage(text) {
     const isIncome = /recebi|ganhei|salário|dividendo|depositei/.test(lower);
     const amount = moneyMatch ? parseFloat(moneyMatch[1].replace(",", ".")) : 0;
 
-    // Tenta detectar a categoria do gasto para estatísticas mais ricas
     const expenseCategory = lower.includes("mercad") || lower.includes("super") ? "alimentação"
       : lower.includes("uber") || lower.includes("combustível") || lower.includes("gasolina") ? "transporte"
       : lower.includes("factura") || lower.includes("conta") || lower.includes("boleto") ? "contas"
@@ -137,7 +107,6 @@ function parseMessage(text) {
     };
   }
 
-  // ── SONO ───────────────────────────────────────────────────────────────────
   const sleepWords = ["dormi", "acordei", "sono", "dormindo", "insônia", "pesadelo",
     "descansado", "cansado", "cansada", "sonolento"];
   const sleepHours = lower.match(/dormi\s+(\d+[\.,]?\d*)/)?.[1] ||
@@ -159,7 +128,6 @@ function parseMessage(text) {
     };
   }
 
-  // ── HUMOR / EMOÇÕES ────────────────────────────────────────────────────────
   const moodWords = ["feliz", "triste", "ansioso", "ansiosa", "animado", "animada",
     "estressado", "estressada", "relaxado", "relaxada", "motivado", "motivada",
     "desmotivado", "irritado", "grato", "gratidão", "deprimido", "eufórico",
@@ -169,7 +137,6 @@ function parseMessage(text) {
     result.category = "mood";
     result.confidence = "high";
 
-    // Score de -5 a +5 para traçar linha de tendência emocional
     const score = /feliz|animad|motivad|grat|eufóric|excelente/.test(lower) ? 4
       : /relaxad|bem|tranquil/.test(lower) ? 2
       : /ansios|estressad/.test(lower) ? -2
@@ -188,7 +155,6 @@ function parseMessage(text) {
     result.data = { label, score, emotion: score > 0 ? "positive" : score < 0 ? "negative" : "neutral" };
   }
 
-  // ── ALIMENTAÇÃO ────────────────────────────────────────────────────────────
   const foodWords = ["comi", "almocei", "jantei", "café da manhã", "tomei café",
     "lanch", "dieta", "jejum", "água", "hidratei", "proteína"];
 
@@ -217,8 +183,6 @@ function parseMessage(text) {
   return result;
 }
 
-// ─── Gera resposta automática do bot ─────────────────────────────────────────
-// Esta função cria a mensagem de confirmação que o bot envia de volta no WPP
 function generateBotResponse(parsed) {
   const { category, data } = parsed;
 
@@ -256,9 +220,6 @@ function generateBotResponse(parsed) {
   return `📝 *Anotado no diário!*\n"${parsed.raw.substring(0, 60)}..."`;
 }
 
-// ─── WhatsApp Client ──────────────────────────────────────────────────────────
-// LocalAuth salva a sessão autenticada em disco para não precisar escanear
-// o QR Code toda vez que o servidor reinicia — só na primeira vez!
 const wppClient = new Client({
   authStrategy: new LocalAuth({ dataPath: "./wpp-session" }),
   puppeteer: {
@@ -272,19 +233,17 @@ const wppClient = new Client({
   }
 });
 
-let wppStatus = "disconnected"; // Estado atual da conexão WPP
-let qrCodeData = null;          // QR Code em base64 para exibir no frontend
+let wppStatus = "disconnected";
+let qrCodeData = null;
 
-// Quando o QR Code estiver pronto para escanear:
 wppClient.on("qr", (qr) => {
   qrCodeData = qr;
   wppStatus = "qr_ready";
-  qrcode.generate(qr, { small: true }); // Mostra no terminal também
+  qrcode.generate(qr, { small: true });
   console.log("\n📱 ESCANEIE O QR CODE ACIMA COM SEU WHATSAPP!\n");
-  io.emit("wpp_status", { status: "qr_ready", qr }); // Envia para o frontend
+  io.emit("wpp_status", { status: "qr_ready", qr });
 });
 
-// Quando autenticar com sucesso:
 wppClient.on("authenticated", () => {
   wppStatus = "authenticated";
   qrCodeData = null;
@@ -292,34 +251,32 @@ wppClient.on("authenticated", () => {
   io.emit("wpp_status", { status: "authenticated" });
 });
 
-// Quando estiver pronto para receber mensagens:
 wppClient.on("ready", () => {
   wppStatus = "ready";
   console.log("🟢 WhatsApp pronto e conectado!");
   io.emit("wpp_status", { status: "ready" });
 });
 
-// Quando receber uma mensagem:
+// ✅ FILTRO CORRIGIDO: só escuta o grupo "Diário Vivo"
 wppClient.on("message", async (msg) => {
-  // Ignora mensagens de grupos e mensagens do próprio usuário em outros contextos
-  // Só processa mensagens diretas (chats privados)
-if (msg.isGroupMsg || msg.from === 'status@broadcast') return;
-  const text = msg.body;
-  console.log(`📨 Mensagem recebida: "${text}"`);
+  if (msg.from === 'status@broadcast') return;
 
-  // Analisa a mensagem
+  // Busca dados do chat para verificar se é o grupo certo
+  const chat = await msg.getChat();
+  if (!chat.isGroup || chat.name !== 'Diário Vivo') return;
+
+  const text = msg.body;
+  console.log(`📨 Mensagem do Diário Vivo: "${text}"`);
+
   const parsed = parseMessage(text);
   const entry = { id: Date.now(), ...parsed };
 
-  // Salva no banco de dados
   const db = loadDB();
   db.entries.push(entry);
   saveDB(db);
 
-  // Emite para todos os clientes do frontend via WebSocket
   io.emit("new_entry", entry);
 
-  // Envia resposta automática de volta no WhatsApp
   const botReply = generateBotResponse(parsed);
   await msg.reply(botReply);
 
@@ -336,15 +293,12 @@ app.delete("/api/entries", (req, res) => {
   io.emit("entries_cleared");
   res.json({ ok: true });
 });
-// ─── API REST ─────────────────────────────────────────────────────────────────
 
-// Retorna todos os registros — o frontend chama isso ao carregar
 app.get("/api/entries", (req, res) => {
   const db = loadDB();
   res.json(db.entries);
 });
 
-// Adiciona uma entrada manual (para quando o usuário digitar direto no app)
 app.post("/api/entries", (req, res) => {
   const { text } = req.body;
   if (!text) return res.status(400).json({ error: "text is required" });
@@ -356,15 +310,14 @@ app.post("/api/entries", (req, res) => {
   db.entries.push(entry);
   saveDB(db);
 
-  io.emit("new_entry", entry); // Também notifica via WebSocket
+  io.emit("new_entry", entry);
 
   res.json(entry);
 });
 
-// Salva um trajeto do Maps para uma entrada de exercício existente
 app.patch("/api/entries/:id/route", (req, res) => {
   const { id } = req.params;
-  const { route } = req.body; // { polyline, distance_km, duration_min, start, end }
+  const { route } = req.body;
 
   const db = loadDB();
   const entry = db.entries.find(e => e.id === parseInt(id));
@@ -377,12 +330,10 @@ app.patch("/api/entries/:id/route", (req, res) => {
   res.json(entry);
 });
 
-// Status do WhatsApp (para o frontend saber se precisa mostrar QR Code)
 app.get("/api/wpp/status", (req, res) => {
   res.json({ status: wppStatus, qr: qrCodeData });
 });
 
-// Estatísticas consolidadas para o dashboard
 app.get("/api/stats", (req, res) => {
   const db = loadDB();
   const entries = db.entries;
@@ -391,7 +342,6 @@ app.get("/api/stats", (req, res) => {
   const exercise = entries.filter(e => e.category === "exercise");
   const sleep = entries.filter(e => e.category === "sleep");
   const mood = entries.filter(e => e.category === "mood");
-  const food = entries.filter(e => e.category === "food");
 
   res.json({
     totals: {
@@ -407,14 +357,11 @@ app.get("/api/stats", (req, res) => {
   });
 });
 
-// ─── WebSocket ────────────────────────────────────────────────────────────────
 io.on("connection", (socket) => {
   console.log("🌐 Frontend conectado via WebSocket");
-  // Envia o status atual imediatamente ao conectar
   socket.emit("wpp_status", { status: wppStatus, qr: qrCodeData });
 });
 
-// ─── Inicialização ────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;
 server.listen(PORT, () => {
   console.log(`\n🚀 DiárioVivo Backend rodando na porta ${PORT}`);
