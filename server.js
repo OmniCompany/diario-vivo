@@ -42,7 +42,12 @@ const DB_PATH = path.join(__dirname, "data.json");
 
 function loadDB() {
   if (!fs.existsSync(DB_PATH)) return { entries: [], lastUpdated: null };
-  return JSON.parse(fs.readFileSync(DB_PATH, "utf-8"));
+  try {
+    const data = fs.readFileSync(DB_PATH, "utf-8");
+    return JSON.parse(data);
+  } catch (e) {
+    return { entries: [], lastUpdated: null };
+  }
 }
 
 function saveDB(data) {
@@ -215,7 +220,7 @@ function parseMessage(text) {
 // ─── Gera resposta automática do bot ─────────────────────────────────────────
 // Esta função cria a mensagem de confirmação que o bot envia de volta no WPP
 function generateBotResponse(parsed) {
-  const { category, data, confidence } = parsed;
+  const { category, data } = parsed;
 
   if (category === "exercise") {
     const details = [
@@ -257,14 +262,15 @@ function generateBotResponse(parsed) {
 const wppClient = new Client({
   authStrategy: new LocalAuth({ dataPath: "./wpp-session" }),
   puppeteer: {
-  headless: true,
-  args: [
-    "--no-sandbox",
-    "--disable-setuid-sandbox",
-    "--disable-dev-shm-usage",
-    "--disable-gpu"
-  ],
-},
+    headless: true,
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-gpu"
+    ],
+  }
+});
 
 let wppStatus = "disconnected"; // Estado atual da conexão WPP
 let qrCodeData = null;          // QR Code em base64 para exibir no frontend
