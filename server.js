@@ -257,9 +257,12 @@ wppClient.on("ready", () => {
   io.emit("wpp_status", { status: "ready" });
 });
 
-// ✅ FILTRO CORRIGIDO: só escuta o grupo "Diário Vivo"
-wppClient.on("message", async (msg) => {
+// ✅ FILTRO CORRIGIDO: escuta suas próprias mensagens no grupo "Diário Vivo"
+// Usa message_create que captura mensagens enviadas E recebidas
+wppClient.on("message_create", async (msg) => {
   if (msg.from === 'status@broadcast') return;
+  // Ignora respostas do próprio bot para não criar loop
+  if (msg.body.startsWith('✅') || msg.body.startsWith('📝')) return;
 
   // Busca dados do chat para verificar se é o grupo certo
   const chat = await msg.getChat();
@@ -277,8 +280,10 @@ wppClient.on("message", async (msg) => {
 
   io.emit("new_entry", entry);
 
+  // Envia resposta no grupo
   const botReply = generateBotResponse(parsed);
-  await msg.reply(botReply);
+  const chatObj = await msg.getChat();
+  await chatObj.sendMessage(botReply);
 
   console.log(`💾 Registrado: [${parsed.category}] com confiança ${parsed.confidence}`);
 });
