@@ -7,7 +7,7 @@ const express = require("express");
 const cors = require("cors");
 const http = require("http");
 const { Server } = require("socket.io");
-const { Client, RemoteAuth } = require("whatsapp-web.js");
+const { Client, LocalAuth } = require("whatsapp-web.js");
 const qrcode = require("qrcode-terminal");
 const { Pool } = require("pg");
 
@@ -65,40 +65,7 @@ async function updateEntryRoute(id, route) {
   return data;
 }
 
-// ─── Store de sessão WPP no PostgreSQL ───────────────────────────────────────
-// Implementa a interface que o whatsapp-web.js RemoteAuth espera
-class PGStore {
-  async sessionExists({ session }) {
-    const res = await pool.query("SELECT id FROM wpp_session WHERE id=$1", [session]);
-    return res.rows.length > 0;
-  }
-  async save({ session }) {
-    // A sessão é salva via extract() — aqui só registramos existência
-  }
-  async extract({ session, path: destPath }) {
-    const res = await pool.query("SELECT session_data FROM wpp_session WHERE id=$1", [session]);
-    if (!res.rows[0]) return;
-    const fs = require("fs");
-    const zlib = require("zlib");
-    const buf = Buffer.from(res.rows[0].session_data, "base64");
-    const zip = zlib.gunzipSync(buf);
-    fs.mkdirSync(destPath, { recursive: true });
-    // session_data é o tar em base64
-    require("child_process").execSync(`echo "${res.rows[0].session_data}" | base64 -d | tar xz -C "${destPath}"`);
-  }
-  async save({ session, path: srcPath }) {
-    const { execSync } = require("child_process");
-    const b64 = execSync(`tar czf - -C "${srcPath}" . | base64`).toString().replace(/\n/g, "");
-    await pool.query(
-      `INSERT INTO wpp_session (id, session_data, updated_at) VALUES ($1,$2,NOW())
-       ON CONFLICT (id) DO UPDATE SET session_data=$2, updated_at=NOW()`,
-      [session, b64]
-    );
-  }
-  async delete({ session }) {
-    await pool.query("DELETE FROM wpp_session WHERE id=$1", [session]);
-  }
-}
+// Sessão salva em disco via Railway Volume (montado em /app/wpp-session)
 
 // ─── Parser de linguagem natural ─────────────────────────────────────────────
 function parseMessage(text) {
@@ -213,15 +180,11 @@ function generateBotResponse(parsed) {
 }
 
 // ─── WhatsApp Client com RemoteAuth ──────────────────────────────────────────
-const pgStore = new PGStore();
 let wppStatus = "disconnected";
 let qrCodeData = null;
 
 const wppClient = new Client({
-  authStrategy: new RemoteAuth({
-    store: pgStore,
-    backupSyncIntervalMs: 300000, // salva sessão a cada 5 min
-  }),
+  authStrategy: new LocalAuth({ dataPath: "/app/wpp-session" }),
   puppeteer: {
     headless: true,
     args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
