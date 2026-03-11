@@ -15,6 +15,8 @@ const { Server } = require("socket.io");
 const { Client, LocalAuth } = require("whatsapp-web.js");
 const qrcode = require("qrcode-terminal");
 const { Pool } = require("pg");
+const fs = require("fs");
+const path = require("path");
 
 const app = express();
 const server = http.createServer(app);
@@ -664,6 +666,29 @@ const PORT = process.env.PORT || 3001;
 
 async function start() {
   await initDB();
+
+  // Remove lock files do Chromium que ficam presos após crash/redeploy
+  const wppSessionPath = "/app/wpp-session";
+  const lockFiles = [
+    path.join(wppSessionPath, "SingletonLock"),
+    path.join(wppSessionPath, "SingletonCookie"),
+    path.join(wppSessionPath, "SingletonSocket"),
+  ];
+  lockFiles.forEach(f => {
+    if (fs.existsSync(f)) {
+      fs.unlinkSync(f);
+      console.log(`🧹 Lock removido: ${f}`);
+    }
+  });
+  // Também remove locks dentro das pastas de perfil do Chrome
+  try {
+    const profileDirs = fs.readdirSync(wppSessionPath).filter(d => d.startsWith("Default") || d.startsWith("Profile"));
+    profileDirs.forEach(dir => {
+      const lockPath = path.join(wppSessionPath, dir, "LOCK");
+      if (fs.existsSync(lockPath)) { fs.unlinkSync(lockPath); console.log(`🧹 Lock removido: ${lockPath}`); }
+    });
+  } catch (e) { /* pasta pode não existir ainda */ }
+
   server.listen(PORT, () => {
     console.log(`\n🚀 DiárioVivo rodando na porta ${PORT}`);
     console.log(`📡 API: http://localhost:${PORT}/api`);
