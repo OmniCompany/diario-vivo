@@ -667,27 +667,24 @@ const PORT = process.env.PORT || 3001;
 async function start() {
   await initDB();
 
-  // Remove lock files do Chromium que ficam presos após crash/redeploy
-  const wppSessionPath = "/app/wpp-session";
-  const lockFiles = [
-    path.join(wppSessionPath, "SingletonLock"),
-    path.join(wppSessionPath, "SingletonCookie"),
-    path.join(wppSessionPath, "SingletonSocket"),
-  ];
-  lockFiles.forEach(f => {
-    if (fs.existsSync(f)) {
-      fs.unlinkSync(f);
-      console.log(`🧹 Lock removido: ${f}`);
-    }
-  });
-  // Também remove locks dentro das pastas de perfil do Chrome
-  try {
-    const profileDirs = fs.readdirSync(wppSessionPath).filter(d => d.startsWith("Default") || d.startsWith("Profile"));
-    profileDirs.forEach(dir => {
-      const lockPath = path.join(wppSessionPath, dir, "LOCK");
-      if (fs.existsSync(lockPath)) { fs.unlinkSync(lockPath); console.log(`🧹 Lock removido: ${lockPath}`); }
-    });
-  } catch (e) { /* pasta pode não existir ainda */ }
+  // Remove TODOS os lock files do Chromium recursivamente
+  // O whatsapp-web.js cria a sessão em /app/wpp-session/session-default/
+  function removeLocks(dir) {
+    if (!fs.existsSync(dir)) return;
+    try {
+      const items = fs.readdirSync(dir);
+      items.forEach(item => {
+        const fullPath = path.join(dir, item);
+        if (["SingletonLock", "SingletonCookie", "SingletonSocket", "LOCK", ".org.chromium.Chromium.*"].some(n => item === n || item.startsWith(".org.chromium"))) {
+          try { fs.unlinkSync(fullPath); console.log(`🧹 Lock removido: ${fullPath}`); } catch (e) {}
+        } else {
+          try { if (fs.statSync(fullPath).isDirectory()) removeLocks(fullPath); } catch (e) {}
+        }
+      });
+    } catch (e) {}
+  }
+  removeLocks("/app/wpp-session");
+  console.log("🧹 Limpeza de locks concluída");
 
   server.listen(PORT, () => {
     console.log(`\n🚀 DiárioVivo rodando na porta ${PORT}`);
