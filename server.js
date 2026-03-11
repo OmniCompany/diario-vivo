@@ -432,9 +432,46 @@ wppClient.on("remote_session_saved", () => {
   console.log("💾 Sessão salva!");
 });
 
+// ─── Detecção de intenção via IA ─────────────────────────────────────────────
+// Classifica a mensagem em: habit | goal | command | question
+async function detectIntent(text) {
+  if (!process.env.ANTHROPIC_API_KEY) return { intent: "habit" };
+  try {
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-api-key": process.env.ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" },
+      body: JSON.stringify({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 100,
+        messages: [{ role: "user", content: `Classifique esta mensagem em português em UMA das categorias abaixo. Responda APENAS o JSON.
+
+Mensagem: "${text}"
+
+Categorias:
+- "habit" = registrar um hábito (exercício, gasto, receita, sono, humor, refeição)
+- "goal_set" = definir/criar uma meta ou objetivo pessoal
+- "goal_list" = ver/listar metas ativas
+- "goal_remove" = remover uma meta (menciona número)
+- "insights" = pedir análise, insights, resumo, relatório da IA
+- "report" = pedir relatório de gastos/hábitos/semana
+- "alerts" = verificar alertas
+- "help" = pedir ajuda ou lista de comandos
+- "question" = fazer uma pergunta sobre seus dados
+
+Responda APENAS: {"intent": "categoria", "goalText": "texto da meta se goal_set, senão null", "goalRemoveN": numero_ou_null}` }]
+      })
+    });
+    const data = await response.json();
+    const raw = data.content?.[0]?.text?.trim() || '{"intent":"habit"}';
+    return JSON.parse(raw.replace(/```json|```/g, "").trim());
+  } catch (e) {
+    return { intent: "habit" };
+  }
+}
+
 wppClient.on("message_create", async (msg) => {
   if (msg.from === "status@broadcast") return;
-  if (msg.body.startsWith("✅") || msg.body.startsWith("📝") || msg.body.startsWith("🎯") || msg.body.startsWith("⚠️") || msg.body.startsWith("🚨") || msg.body.startsWith("━")) return;
+  if (msg.body.startsWith("✅") || msg.body.startsWith("📝") || msg.body.startsWith("🎯") || msg.body.startsWith("⚠️") || msg.body.startsWith("🚨") || msg.body.startsWith("━") || msg.body.startsWith("🤖") || msg.body.startsWith("📋") || msg.body.startsWith("📖")) return;
 
   const chat = await msg.getChat();
   if (!chat.isGroup || chat.name !== "Diário Vivo") return;
@@ -444,69 +481,95 @@ wppClient.on("message_create", async (msg) => {
   console.log(`📨 Diário Vivo: "${text}"`);
   diaryChat = chat;
 
-  // ── Comando: /metas — lista metas ativas
-  if (lower === "/metas" || lower === "metas" || lower === "/goals") {
+  // ── Detecta intenção (IA + fallback por palavras-chave)
+  let intent = "habit";
+  let goalText = null;
+  let goalRemoveN = null;
+
+  // Palavras-chave diretas (rápido, sem custo de API)
+  if (/^\/(metas|goals|help|ajuda|insights?|ia|alertas?|check|relat[oó]rio|report)$/i.test(lower) ||
+      /^(metas|ajuda|alertas?|insights?)$/i.test(lower)) {
+    if (/metas|goals/.test(lower)) intent = "goal_list";
+    else if (/help|ajuda/.test(lower)) intent = "help";
+    else if (/insights?|ia$/.test(lower)) intent = "insights";
+    else if (/alertas?|check/.test(lower)) intent = "alerts";
+    else if (/relat|report/.test(lower)) intent = "report";
+  } else if (/remover?\s+meta\s+\d+/i.test(lower)) {
+    intent = "goal_remove";
+    goalRemoveN = parseInt(lower.match(/\d+/)[0]);
+  } else if (/^(meta:|objetivo:|quero )/i.test(text)) {
+    intent = "goal_set";
+    goalText = text.replace(/^(meta:|objetivo:|quero)\s*/i, "");
+  } else {
+    // Mensagem ambígua — usa IA para classificar
+    const detected = await detectIntent(text);
+    intent = detected.intent || "habit";
+    goalText = detected.goalText || text;
+    goalRemoveN = detected.goalRemoveN || null;
+  }
+
+  console.log(`🧠 Intent: ${intent}`);
+
+  // ── GOAL LIST
+  if (intent === "goal_list") {
     const goals = await loadGoals();
     if (!goals.length) {
-      await chat.sendMessage("📋 Você ainda não tem metas cadastradas!\n\nExemplos para definir:\n• *meta: gastar até R$2000 esse mês*\n• *meta: correr 20km essa semana*\n• *meta: dormir pelo menos 7h*\n• *meta: treinar 4 vezes na semana*");
+      await chat.sendMessage("📋 Você ainda não tem metas cadastradas!\n\nExemplos:\n• _Minha meta é gastar até R$2000 esse mês_\n• _Quero correr 20km essa semana_\n• _Meta: dormir pelo menos 7h_");
       return;
     }
     const list = goals.map((g, i) => `${i+1}. ${g.label} (${g.period === "month" ? "mês" : g.period === "week" ? "semana" : "diário"})`).join("\n");
-    await chat.sendMessage(`🎯 *Suas metas ativas:*\n\n${list}\n\nPara remover: *remover meta 1*`);
+    await chat.sendMessage(`🎯 *Suas metas ativas:*\n\n${list}\n\nPara remover: _remover meta 1_`);
     return;
   }
 
-  // ── Comando: remover meta N
-  const removeMatch = lower.match(/remover\s+meta\s+(\d+)/);
-  if (removeMatch) {
+  // ── GOAL REMOVE
+  if (intent === "goal_remove" && goalRemoveN) {
     const goals = await loadGoals();
-    const idx = parseInt(removeMatch[1]) - 1;
+    const idx = goalRemoveN - 1;
     if (idx >= 0 && idx < goals.length) {
       await deleteGoal(goals[idx].id);
       await chat.sendMessage(`✅ Meta removida: _${goals[idx].label}_`);
       io.emit("goals_updated", await loadGoals());
     } else {
-      await chat.sendMessage("❌ Número inválido. Use */metas* para ver a lista.");
+      await chat.sendMessage("❌ Número inválido. Use _metas_ para ver a lista.");
     }
     return;
   }
 
-  // ── Comando: /insights — IA agora
-  if (lower === "/insights" || lower === "insights" || lower === "/ia") {
+  // ── INSIGHTS
+  if (intent === "insights") {
     await chat.sendMessage("🤖 Gerando seus insights personalizados... um momento!");
     const entries = await getWeekEntries();
     if (entries.length < 3) { await chat.sendMessage("📊 Ainda poucos dados esta semana. Registre mais hábitos e tente novamente!"); return; }
     const summary = buildWeekSummary(entries);
     const insights = await generateAIInsights(summary);
-    if (insights) await chat.sendMessage(`🤖 *Insights da semana — IA DiárioVivo*\n\n${insights}`);
+    if (insights) await chat.sendMessage(`🤖 *Insights da semana*\n\n${insights}`);
     return;
   }
 
-  // ── Comando: /alertas — verifica agora
-  if (lower === "/alertas" || lower === "alertas" || lower === "/check") {
+  // ── ALERTS
+  if (intent === "alerts") {
     await checkAlertsAndNotify(chat);
     await chat.sendMessage("✅ Alertas verificados!");
     return;
   }
 
-  // ── Comando: /relatorio — envia relatório agora
-  if (lower === "/relatorio" || lower === "relatorio" || lower === "/report") {
-    await chat.sendMessage("📋 Gerando relatório semanal...");
+  // ── REPORT
+  if (intent === "report") {
+    await chat.sendMessage("📋 Gerando relatório...");
     await sendWeeklyReport();
     return;
   }
 
-  // ── Comando: /ajuda
-  if (lower === "/help" || lower === "ajuda" || lower === "/ajuda") {
-    await chat.sendMessage(`📖 *DiárioVivo — Comandos*\n\n*Registrar hábitos:*\nEscreva naturalmente!\n• "Corri 5km"\n• "Gastei R$50 no mercado"\n• "Dormi 8h bem"\n\n*Metas:*\n• *meta: [descrição]* — cria uma meta\n• */metas* — lista metas ativas\n• *remover meta N* — remove meta\n\n*Relatórios & IA:*\n• */insights* — análise personalizada agora\n• */relatorio* — relatório semanal agora\n• */alertas* — verifica alertas agora\n\n💡 Relatório automático todo domingo!`);
+  // ── HELP
+  if (intent === "help") {
+    await chat.sendMessage(`📖 *DiárioVivo*\n\nEscreva naturalmente:\n• _"Corri 5km hoje"_\n• _"Gastei R$50 no mercado"_\n• _"Dormi 8h bem"_\n• _"Minha meta é gastar até R$2000 esse mês"_\n• _"Quero ver meus insights"_\n• _"Me manda o relatório"_\n\n💡 Relatório automático todo domingo às 20h!`);
     return;
   }
 
-  // ── Define nova meta
-  const isGoal = /^(meta:|meta |objetivo:|quero )/i.test(text);
-  if (isGoal) {
-    const goalText = text.replace(/^(meta:|meta|objetivo:|quero)\s*/i, "");
-    const goal = parseGoal(goalText);
+  // ── GOAL SET
+  if (intent === "goal_set") {
+    const goal = parseGoal(goalText || text);
     if (goal) {
       const newGoal = { ...goal, id: Date.now() };
       await saveGoal(newGoal);
