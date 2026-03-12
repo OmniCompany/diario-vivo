@@ -502,7 +502,7 @@ wppClient.on("message_create", async (msg) => {
   } else {
     // Mensagem ambígua — usa IA para classificar
     const detected = await detectIntent(text);
-    // Usa IA para classificar tudo que nao e comando obvio
+    intent = detected.intent || "habit";
     goalText = detected.goalText || text;
     goalRemoveN = detected.goalRemoveN || null;
   }
