@@ -443,22 +443,24 @@ async function detectIntent(text) {
       body: JSON.stringify({
         model: "claude-haiku-4-5-20251001",
         max_tokens: 100,
-        messages: [{ role: "user", content: `Classifique esta mensagem em português em UMA das categorias abaixo. Responda APENAS o JSON.
+        messages: [{ role: "user", content: `Você é o classificador de intenções do DiárioVivo, um app de rastreamento de hábitos por WhatsApp.
 
-Mensagem: "${text}"
+Mensagem do usuário: "${text}"
 
-Categorias:
-- "habit" = registrar um hábito (exercício, gasto, receita, sono, humor, refeição)
-- "goal_set" = definir/criar uma meta ou objetivo pessoal
-- "goal_list" = ver/listar metas ativas
-- "goal_remove" = remover uma meta (menciona número)
-- "insights" = pedir análise, insights, resumo, relatório da IA
-- "report" = pedir relatório de gastos/hábitos/semana
+Classifique em UMA categoria. Regras críticas:
+- "goal_set" = qualquer mensagem que defina uma meta pessoal futura. Exemplos: "meta de dormir 8h", "/meta correr 21km até fim do mês", "minha meta é ganhar R$10000", "quero correr 20km essa semana", "objetivo: gastar menos de R$2000"
+- "habit" = registrar algo que JÁ ACONTECEU ou está acontecendo AGORA. Exemplos: "corri 10km", "gastei R$100", "dormi 7h", "recebi meu salário"
+- "insights" = pedir análise, resumo, relatório, dicas da IA. Exemplos: "me manda uma análise", "como tá minha semana?", "me dá insights", "análise dos meus hábitos"
+- "report" = pedir relatório semanal/mensal formatado
+- "goal_list" = listar metas ativas
+- "goal_remove" = remover meta por número
 - "alerts" = verificar alertas
-- "help" = pedir ajuda ou lista de comandos
-- "question" = fazer uma pergunta sobre seus dados
+- "help" = ajuda/comandos
 
-Responda APENAS: {"intent": "categoria", "goalText": "texto da meta se goal_set, senão null", "goalRemoveN": numero_ou_null}` }]
+ATENÇÃO: Se a mensagem usa futuro ("quero", "vou", "meta", "objetivo", "até o fim") = goal_set.
+Se usa passado/presente ("corri", "gastei", "dormi", "fiz") = habit.
+
+Responda APENAS JSON: {"intent": "categoria", "goalText": "descrição da meta SEM prefixos como /meta, meta:, objetivo: (só o conteúdo)", "goalRemoveN": numero_ou_null}` }]
       })
     });
     const data = await response.json();
@@ -497,13 +499,10 @@ wppClient.on("message_create", async (msg) => {
   } else if (/remover?\s+meta\s+\d+/i.test(lower)) {
     intent = "goal_remove";
     goalRemoveN = parseInt(lower.match(/\d+/)[0]);
-  } else if (/^(meta:|objetivo:|quero )/i.test(text)) {
-    intent = "goal_set";
-    goalText = text.replace(/^(meta:|objetivo:|quero)\s*/i, "");
   } else {
     // Mensagem ambígua — usa IA para classificar
     const detected = await detectIntent(text);
-    intent = detected.intent || "habit";
+    // Usa IA para classificar tudo que nao e comando obvio
     goalText = detected.goalText || text;
     goalRemoveN = detected.goalRemoveN || null;
   }
