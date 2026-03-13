@@ -56,6 +56,7 @@ app.use(cors({
   credentials: true,
 }));
 app.use(express.json({ limit: "50kb" }));
+app.set("trust proxy", 1); // Railway usa proxy reverso
 
 // ─── Rate Limiters ────────────────────────────────────────────────────────────
 const generalLimiter = rateLimit({ windowMs: 15*60*1000, max: 300, standardHeaders: true, legacyHeaders: false });
@@ -561,7 +562,11 @@ wppClient.on("message_create", async (msg) => {
   let goalText    = null;
   let goalRemoveN = null;
 
-  if (/^\/(metas|goals|help|ajuda|insights?|ia|alertas?|check|relat[oó]rio|report)$/i.test(lower)
+  // ✅ Prefixo /meta ou "meta:" — sempre goal_set, sem chamar IA
+  if (/^\/(meta|goal)\s+.+/i.test(lower) || /^meta[:\s]\s*.+/i.test(lower)) {
+    intent   = "goal_set";
+    goalText = text.replace(/^\/(meta|goal)\s+/i, "").replace(/^meta[:\s]\s*/i, "").trim();
+  } else if (/^\/(metas|goals|help|ajuda|insights?|ia|alertas?|check|relat[oó]rio|report)$/i.test(lower)
       || /^(metas|ajuda|alertas?|insights?)$/i.test(lower)) {
     if (/metas|goals/.test(lower))         intent = "goal_list";
     else if (/help|ajuda/.test(lower))     intent = "help";
