@@ -435,7 +435,7 @@ function parseMessage(text) {
       : lower.includes("conta")||lower.includes("boleto") ? "contas"
       : lower.includes("farmácia")||lower.includes("médico") ? "saúde"
       : lower.includes("academia")||lower.includes("lazer") ? "lazer" : "outros";
-    result.data = { type: isIncome?"income":"expense", amount, expense_category: isIncome?null:expenseCategory, label: isIncome?"Receita":"Gasto" };
+    result.data = { type: isIncome?"income":"expense", amount, expense_category: isIncome?null:expenseCategory, label: isIncome?"Receita":"Gasto", needsCategoryInference: !isIncome && expenseCategory === "outros" };
   }
 
   const sleepWords = ["dormi","acordei","sono","dormindo","insônia","pesadelo","descansado","cansado","sonolento"];
@@ -485,6 +485,30 @@ function generateBotResponse(parsed) {
   if (category === "mood")    return `✅ *Humor registrado!*\n${data.emotion==="positive"?"😊":data.emotion==="negative"?"😔":"😐"} ${data.label} · Score: ${data.score>0?"+":""}${data.score}/5`;
   if (category === "food")    return `✅ *Refeição registrada!*\n🥗 ${data.meal}${data.water_liters?`\n💧 ${data.water_liters}L de água`:""}\n🌿 ${data.healthiness==="healthy"?"Saudável 👍":data.healthiness==="indulgent"?"Indulgente 😅":"Normal"}`;
   return `📝 *Anotado!*\n"${parsed.raw.substring(0,60)}"`;
+}
+
+// ─── Categorização de gastos via IA ─────────────────────────────────────────
+async function inferExpenseCategory(text) {
+  if (!process.env.ANTHROPIC_API_KEY) return "outros";
+  try {
+    const r = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-api-key": process.env.ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" },
+      body: JSON.stringify({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 20,
+        messages: [{ role: "user", content: `Classifique este gasto em UMA categoria. Responda APENAS a categoria, sem mais nada.
+
+Categorias: alimentação, transporte, saúde, moradia, lazer, educação, vestuário, contas, outros
+
+Gasto: "${text}"` }]
+      })
+    });
+    const d = await r.json();
+    const cat = d.content?.[0]?.text?.trim().toLowerCase() || "outros";
+    const valid = ["alimentação","transporte","saúde","moradia","lazer","educação","vestuário","contas","outros"];
+    return valid.includes(cat) ? cat : "outros";
+  } catch { return "outros"; }
 }
 
 // ─── WhatsApp Client (LocalAuth — estável no Railway Volume) ─────────────────
@@ -542,14 +566,24 @@ Responda APENAS JSON: {"intent": "categoria", "goalText": "descrição da meta S
 }
 
 // ─── Handler principal do WhatsApp ────────────────────────────────────────────
+// Handler para mensagens recebidas de outros
+wppClient.on("message", async (msg) => {
+  await handleWppMessage(msg);
+});
+
+// Handler para mensagens enviadas pelo próprio usuário no grupo
 wppClient.on("message_create", async (msg) => {
-  // ✅ Filtros essenciais — evita loop e mensagens indesejadas
-  if (msg.fromMe) return;
+  if (!msg.fromMe) return; // já tratado pelo evento "message"
+  await handleWppMessage(msg);
+});
+
+async function handleWppMessage(msg) {
   if (msg.from === "status@broadcast") return;
   const botPrefixes = ["✅","📝","🎯","⚠️","🚨","━","🤖","📋","📖","💙","🎉","🏃","😴","💸","💰"];
   if (botPrefixes.some(p => msg.body.startsWith(p))) return;
 
   const chat = await msg.getChat();
+  // Aceita grupo "Diário Vivo" OU conversa direta com o bot
   if (!chat.isGroup || chat.name !== "Diário Vivo") return;
 
   const text  = msg.body.trim();
@@ -633,13 +667,20 @@ wppClient.on("message_create", async (msg) => {
 
   // ── Hábito normal
   const parsed = parseMessage(text);
+
+  // ✅ Categorização de gastos via IA quando parser não reconhece
+  if (parsed.data?.needsCategoryInference) {
+    parsed.data.expense_category = await inferExpenseCategory(text);
+    delete parsed.data.needsCategoryInference;
+  }
+
   const entry  = { id: Date.now(), ...parsed };
   await saveEntry(entry);
   io.emit("new_entry", entry);
   await chat.sendMessage(generateBotResponse(parsed));
   console.log(`💾 [${parsed.category}] registrado`);
   setTimeout(() => checkAlertsAndNotify(chat), 2000);
-});
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  API REST (protegidas com requireAuth)
@@ -649,7 +690,12 @@ app.get("/api/entries",               requireAuth, async (req, res) => { res.jso
 app.post("/api/entries",              requireAuth, writeLimiter, async (req, res) => {
   const { text } = req.body;
   if (!text) return res.status(400).json({ error: "text is required" });
-  const parsed = parseMessage(text), entry = { id: Date.now(), ...parsed };
+  const parsed = parseMessage(text);
+  if (parsed.data?.needsCategoryInference) {
+    parsed.data.expense_category = await inferExpenseCategory(text);
+    delete parsed.data.needsCategoryInference;
+  }
+  const entry = { id: Date.now(), ...parsed };
   await saveEntry(entry); io.emit("new_entry", entry); res.json(entry);
 });
 app.delete("/api/entries",            requireAuth, async (req, res) => {
